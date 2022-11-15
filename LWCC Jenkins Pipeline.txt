@@ -1,0 +1,93 @@
+pipeline {
+    agent any
+    environment {
+        dockerhub=credentials('dockerhub')
+        CONTAINER_NAME = 'url'
+        DB_USER = 'magento'
+        DB_PASSWORD = 'magento'
+        DATABASE = 'magento'
+        SED="sed -re 's/DEFINER=`[^`]+`@`[^`]+`//'"
+        DB_PATH='/var/www/html/27-Sep-2022'
+        PROJECT_NAME = 'lwcc'
+    }
+    stages {
+        stage('pull docker image') {
+            steps {
+                sh """
+                docker pull srikanthcheemala/2.4.2:magento
+                """
+            }
+        }
+        stage('create container and go inside it') {
+            steps {
+                sh """
+                docker rm -f ${CONTAINER_NAME}
+                docker run -itd -v /var/www/html:/var/www/html -v /var/www/db:/var/db --name=${CONTAINER_NAME} srikanthcheemala/trail:2.4.2
+                docker exec -i ${CONTAINER_NAME} sh
+                """
+            }
+        }
+        stage("get db and code") {
+            steps {
+                sh """ 
+                docker exec -i ${CONTAINER_NAME} sh
+                docker cp /home/srikanthc/Downloads/27-Sep-2022 ${CONTAINER_NAME}:/var/www/html
+				docker exec -i ${CONTAINER_NAME}  mv /var/www/html/27-Sep-2022/magento /var/www/html
+                """
+            }
+        }
+        stage('use zcat') {
+            steps {
+                sleep (140)
+                sh """
+                docker exec ${CONTAINER_NAME} sh -c "zcat ${DB_PATH}/*.sql.gz | mysql -h localhost -u ${DB_USER} -p${DB_PASSWORD} ${DATABASE}"
+                """
+            }
+        }
+    }
+    }
+	   stages {
+        stage('login to mysql') {
+            steps {
+                sh """
+                         docker exec ${CONTAINER_NAME} mysql -u ${DB_USER} -p${DB_PASSWORD} ${DATABASE} -e 'update core_config_data set value = "http://kanthuexporting.com/" where config_id in (2,3,1265,1266,1423,1424,1425,1426,1429,1430,1431,1432);'
+                  """
+            }
+        }
+        stage('get env.php') {
+            steps {
+                sh """
+                 docker cp /home/srikanthc/env.php ${CONTAINER_NAME}:/var/www/html/magento/app/etc
+                """
+            }
+        }
+        stage('install composer') {
+            steps {
+                sh """
+                 docker exec ${CONTAINER_NAME} sh -c su - elasticsearch -c /usr/share/elasticsearch/bin/elasticsearch > /dev/null 2>&1
+                 docker exec ${CONTAINER_NAME} sh -c "composer install -n -d /var/www/html/magento"
+                """
+            }
+        }
+        stage('run the magento commands') {
+            steps {
+                sleep (20)
+                sh """
+                 docker exec ${CONTAINER_NAME} sh -c "php /var/www/html/magento/bin/magento setup:upgrade"
+                 docker exec ${CONTAINER_NAME} sh -c "php /var/www/html/magento/bin/magento setup:di:compile"
+                 docker exec ${CONTAINER_NAME} sh -c "php /var/www/html/magento/bin/magento setup:static-content:deploy -f"
+                 docker exec ${CONTAINER_NAME} sh -c "php /var/www/html/magento/bin/magento cache:clean" 
+                 docker exec ${CONTAINER_NAME} sh -c "php /var/www/html/magento/bin/magento cache:flush" 
+                 docker exec ${CONTAINER_NAME} sh -c "chown -R magento:www-data /var/www/html" 
+                """
+            }
+        }
+        stage('DB backup') {
+            steps {
+                sh """
+                 docker exec ${CONTAINER_NAME} sh -c "mysqldump -h localhost --user=${DB_USER}  --password=${DB_PASSWORD}  --no-tablespaces --single-transaction --skip-triggers ${DATABASE} | gzip > /var/db/magento.sql.gz"
+                """
+            }
+        }
+    }
+}
